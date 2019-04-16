@@ -23,20 +23,19 @@ class QuoteBot(discord.Client):
 
     async def on_ready(self):
         print('Logged in as ', self.user)
-        
-    
+            
     async def on_message(self, message):
         if message.author == self.user:
             return
         if message.author.bot:
             return # Bots are not allowed to use this service.
-        #if message.author.id != self.quotebot_owner_id and not message.server:
-        #    return
-        
+        if isinstance(message.author, discord.User) and message.author.id != self.quotebot_owner_id:
+            return # Ignore private messages that aren't from the bot owner.
+
         if add_quote.match(message.content):
-            #if message.author.id != self.quotebot_owner_id and not message.author.permissions.send_messages:
-            #    await message.channel.send('User has insufficient permissions for this action.')
-            #    return
+            if  message.author.id != self.quotebot_owner_id and not message.author.top_role.permissions.send_messages:
+                await message.channel.send('User has insufficient permissions for this action.')
+                return
             match = add_quote.match(message.content)
             quote_message = match.group(2)
             timestamp = time.time()
@@ -44,11 +43,11 @@ class QuoteBot(discord.Client):
             id = self.quote_store.add_quote(quote_message, timestamp, author)
             await message.channel.send('Added #{} to the database.'.format(id))
         elif delete_quote.match(message.content):
-            #if message.author.id != self.quotebot_owner_id and not message.author.permissions.can_kick:
-             #   await message.channel.send('User has insufficient permissions for this action.')
-            #    return
+            if message.author.id != self.quotebot_owner_id and not message.author.top_role.permissions.kick_members:
+                await message.channel.send('User has insufficient permissions for this action.')
+                return
             match = delete_quote.match(message.content)
-            id = match.group(2)
+            id = int(match.group(2))
             try:
                 self.quote_store.delete_quote(id)
             except Exception:
@@ -85,7 +84,7 @@ class QuoteBot(discord.Client):
                 await message.channel.send(result)
         elif get_quote.match(message.content):
             match = get_quote.match(message.content)
-            id = match.group(1)
+            id = int(match.group(1))
             result = self._get_quote(id)
             await message.channel.send(result)
         elif random_quote.match(message.content):
@@ -206,8 +205,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-t", "--token", type=str, required=True, help="The token for your discord bot.")
     parser.add_argument("-o", "--owner", type=int, required=True, help="The quote bot owner's discord id.")
+    parser.add_argument("-q", "--quotes", type=str, required=False, help="The path for the text file to store your quotes.", default="quotes.txt")
     args = parser.parse_args()
     token = args.token
     owner_id = args.owner
-    client = QuoteBot(owner_id, "quotes.txt")
+    quotes_store = args.quotes
+    client = QuoteBot(owner_id, quotes_store)
     client.run(token)
