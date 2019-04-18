@@ -15,13 +15,13 @@ ADD_QUOTE = re.compile(r"(\+quote|\.quote add) (.+)", re.DOTALL | re.IGNORECASE)
 DELETE_QUOTE = re.compile(r"(-quote|\.quote del) (\d+)", re.IGNORECASE)
 FIND_MESSAGE_QUOTE = re.compile(r"\.(quote find|quote with) (.+)", re.DOTALL | re.IGNORECASE)
 FIND_AUTHOR_QUOTE = re.compile(r"\.(quote author|quote by) (.+)", re.DOTALL | re.IGNORECASE)
-GET_QUOTE = re.compile(r"\.quote get (\d+)", re.IGNORECASE)
+GET_QUOTE = re.compile(r"\.(quote get|quote search) (\d+)", re.IGNORECASE)
 RANDOM_QUOTE = re.compile(r"\.quote random", re.IGNORECASE)
 MOST_RECENT_QUOTE = re.compile(r"\.quote last", re.IGNORECASE)
 
 def format_timestamp(timestamp):
     """Formats an input timestamp (as from time.time() or similar) as
-    %d %B %Y, %H:%M:%S (e.g., 17 March 2019, 13:12:11"""
+    %d %B %Y, %H:%M:%S (e.g., 17 March 2019, 13:12:11)"""
     time_as_object = datetime.fromtimestamp(float(timestamp))
     formatted_time = time_as_object.strftime("%d %B %Y, %H:%M:%S")
     return formatted_time
@@ -119,7 +119,7 @@ class QuoteBot(discord.Client):
                 await message.channel.send(result)
         elif GET_QUOTE.match(message.content):
             match = GET_QUOTE.match(message.content)
-            quote_id = int(match.group(1))
+            quote_id = int(match.group(2))
             result = self._get_quote(quote_id)
             await message.channel.send(result)
         elif RANDOM_QUOTE.match(message.content):
