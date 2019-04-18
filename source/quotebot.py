@@ -18,6 +18,7 @@ FIND_AUTHOR_QUOTE = re.compile(r"\.(quote author|quote by) (.+)", re.DOTALL | re
 GET_QUOTE = re.compile(r"\.(quote get|quote search) (\d+)", re.IGNORECASE)
 RANDOM_QUOTE = re.compile(r"\.quote random", re.IGNORECASE)
 MOST_RECENT_QUOTE = re.compile(r"\.quote last", re.IGNORECASE)
+TOTAL_QUOTE = re.compile(r"\.quote total", re.IGNORECASE)
 
 def format_timestamp(timestamp):
     """Formats an input timestamp (as from time.time() or similar) as
@@ -138,6 +139,9 @@ class QuoteBot(discord.Client):
             else:
                 result = self._get_quote(most_recent_id)
                 await message.channel.send(result)
+        elif TOTAL_QUOTE.match(message.content):
+            num_quotes = self.quote_store.quote_count()
+            await message.channel.send('{} quotes in the store.'.format(num_quotes))
         else:
             pass # Irrelevant message.
 
@@ -259,6 +263,9 @@ class QuoteDB:
             raise ValueError('No quotes in the store.')
         quote_id = list(self.ids_to_messages.keys())[-1]
         return quote_id
+    
+    def quote_count(self):
+        return len(self.ids_to_messages)
 
 def main():
     """Point of entry for the quote bot."""
