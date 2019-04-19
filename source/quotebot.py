@@ -13,12 +13,22 @@ import discord
 
 ADD_QUOTE = re.compile(r"(\+quote|\.quote add) (.+)", re.DOTALL | re.IGNORECASE)
 DELETE_QUOTE = re.compile(r"(-quote|\.quote del) (\d+)", re.IGNORECASE)
-FIND_MESSAGE_QUOTE = re.compile(r"\.(quote find|quote with) (.+)", re.DOTALL | re.IGNORECASE)
+FIND_MESSAGE_QUOTE = re.compile(r"\.(quote search|quote with) (.+)", re.DOTALL | re.IGNORECASE)
 FIND_AUTHOR_QUOTE = re.compile(r"\.(quote author|quote by) (.+)", re.DOTALL | re.IGNORECASE)
-GET_QUOTE = re.compile(r"\.(quote get|quote search) (\d+)", re.IGNORECASE)
+GET_QUOTE = re.compile(r"\.(quote get|quote read) (\d+)", re.IGNORECASE)
 RANDOM_QUOTE = re.compile(r"\.quote random", re.IGNORECASE)
 MOST_RECENT_QUOTE = re.compile(r"\.quote last", re.IGNORECASE)
 TOTAL_QUOTE = re.compile(r"\.quote total", re.IGNORECASE)
+HELP_QUOTE = re.compile(r"\.quote help", re.IGNORECASE)
+
+HELP_MESSAGE = """.quote help - sends this message to the user.
+\n.quote add <quote> | +quote <quote> - adds the quote to the store if the user has sufficient permissions.
+\n.quote del <id> | -quote <id> - removes the quote with the id from the store if the user has sufficient permissions.
+\n.quote search <search terms> | .quote get <search terms> - searches the store for quotes matching the search terms.
+\n.quote read <id> | .quote get <id> - returns the quote with the matching id.
+\n.quote random - returns a random quote from the store.
+\n.quote last - returns the last quote added to the store.
+\n.quote total - returns the number of quotes in the store."""
 
 def format_timestamp(timestamp):
     """Formats an input timestamp (as from time.time() or similar) as
@@ -142,6 +152,9 @@ class QuoteBot(discord.Client):
         elif TOTAL_QUOTE.match(message.content):
             num_quotes = self.quote_store.quote_count()
             await message.channel.send('{} quotes in the store.'.format(num_quotes))
+        elif HELP_QUOTE.match(message.content):
+            response = '```{}```'.format(HELP_MESSAGE)
+            await message.author.send(response)
         else:
             pass # Irrelevant message.
 
