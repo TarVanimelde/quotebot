@@ -24,7 +24,8 @@ HELP_QUOTE = re.compile(r"\.quote help", re.IGNORECASE)
 HELP_MESSAGE = """.quote help - sends this message to the user.
 \n.quote add <quote> | +quote <quote> - adds the quote to the store if the user has sufficient permissions.
 \n.quote del <id> | -quote <id> - removes the quote with the id from the store if the user has sufficient permissions.
-\n.quote search <search terms> | .quote get <search terms> - searches the store for quotes matching the search terms.
+\n.quote author <author name> | .quote by <author name> - returns quotes added to the store by the author.
+\n.quote search <search terms> | .quote with <search terms> - searches the store for quotes matching the search terms.
 \n.quote read <id> | .quote get <id> - returns the quote with the matching id.
 \n.quote random - returns a random quote from the store.
 \n.quote last - returns the last quote added to the store.
