@@ -448,7 +448,7 @@ class ImageDB:
     def get_random_image(self, safety='sfw', tags=[]):
         safety_level = self.safety_to_level(safety)
         try:
-            query = """SELECT * FROM images WHERE safety = ?"""
+            query = """SELECT * FROM images WHERE safety = ? ORDER BY RANDOM() LIMIT 1"""
             cursor = self.connection.cursor()
             cursor.execute(query, (safety_level,))
             result = cursor.fetchone()
