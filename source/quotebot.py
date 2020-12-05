@@ -510,7 +510,7 @@ class ImageDB:
             if not os.path.exists(result):
                 print(f'Expected an image at {result} and found none.')
                 return None
-            os.unlink()
+            os.unlink(result)
 
             query = f"""DELETE FROM images WHERE imageid = {id}"""
             cursor.execute(query)
