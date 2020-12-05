@@ -1,13 +1,18 @@
 """Simple quote bot written using discord.py that seeks to emulate the
 Quotes bot from the irc Rizon server."""
 
+import aiohttp        
+import aiofiles
 import argparse
 import csv
 from datetime import datetime
 import os
+import os.path
 import random
 import re
+import sqlite3
 import time
+import urllib
 
 import discord
 
@@ -20,6 +25,14 @@ RANDOM_QUOTE = re.compile(r"\.quote random", re.IGNORECASE)
 MOST_RECENT_QUOTE = re.compile(r"\.quote last", re.IGNORECASE)
 TOTAL_QUOTE = re.compile(r"\.quote total", re.IGNORECASE)
 HELP_QUOTE = re.compile(r"\.quote help", re.IGNORECASE)
+
+ADD_IMAGE = re.compile(r".qimg add (sfw|nsfw)( )*(.*)", re.IGNORECASE)
+CHANGE_SAFETY = re.compile(r".qimg change (sfw|nsfw)( )*(\d+)", re.IGNORECASE)
+DELETE_IMAGE = re.compile(r".qimg delete ( )*(\d+)", re.IGNORECASE)
+GET_IMAGE = re.compile(r".qimg (get|view) (sfw|nsfw) (\d+)", re.DOTALL | re.IGNORECASE)
+GET_IMAGE_TAGGED = re.compile(r".qimg tagged (sfw|nsfw) (.+)", re.DOTALL | re.IGNORECASE)
+RANDOM_IMAGE = re.compile(r".qimg random (sfw|nsfw)( )*(.*)", re.DOTALL | re.IGNORECASE)
+
 
 HELP_MESSAGE = """.quote help - sends this message to the user.
 \n.quote add <quote> | +quote <quote> - adds the quote to the store if the user has sufficient permissions.
@@ -40,13 +53,14 @@ def format_timestamp(timestamp):
 
 class QuoteBot(discord.Client):
     """Event handling for Discord."""
-    def __init__(self, quotebot_owner_id=-1, quote_store_path="quotes.txt"):
+    def __init__(self, quotebot_owner_id=-1, quote_store_path="quotes.txt", image_db_path="imagedb.sqlite", image_dir="images"):
         """Starts the quote bot (and its superclass), initializing the underlying quote store.
         Keywords arguments:
         quotebot_owner_id -- the userid of regular account owner in charge of the bot (default -1)
         quote_store_path -- the path to the file containing the quote store (default quotes.txt)"""
         self.quote_store = QuoteDB(quote_store_path)
         self.quotebot_owner_id = quotebot_owner_id
+        self.image_db = ImageDB(image_db_path, image_dir)
         super(QuoteBot, self).__init__()
 
     async def on_ready(self):
@@ -99,7 +113,7 @@ class QuoteBot(discord.Client):
                 result = 'Quote #{} is not in the store.'.format(quote_id)
                 await message.channel.send(result)
             else:
-                result = 'Quote #{} has been deleted, just like your dreams.'.format(quote_id)
+                result = 'Quote #{} has been deleted.'.format(quote_id)
                 await message.channel.send(result)
         elif FIND_MESSAGE_QUOTE.match(message.content):
             match = FIND_MESSAGE_QUOTE.match(message.content)
@@ -156,9 +170,115 @@ class QuoteBot(discord.Client):
         elif HELP_QUOTE.match(message.content):
             response = '```{}```'.format(HELP_MESSAGE)
             await message.author.send(response)
+        elif ADD_IMAGE.match(message.content):
+            match = ADD_IMAGE.match(message.content)
+            safety_level = match.group(1).lower()
+            tags = match.group(3).split()
+
+            image_types = ["png", "jpeg", "gif", "jpg"]
+            is_image = lambda filename: any(filename.lower().endswith(image_type) for image_type in image_types)
+            images = list(map(lambda attachment: attachment.url, filter(lambda attachment: is_image(attachment.filename), message.attachments)))
+            print(images)
+
+            if not images:
+                await message.channel.send('No images to save.')
+                return
+            timestamp = time.time()
+            author = message.author.display_name
+            for image in images:
+
+                result = await self.image_db.add_image(image, safety_level, tags, author, timestamp)
+                if result is None:
+                    await message.channel.send(f'There was an error saving {image}.')
+                else:
+                    await message.channel.send(f'Added <{image}> as image #{result} to the database.')
+        elif CHANGE_SAFETY.match(message.content):
+            if (message.author.id != self.quotebot_owner_id and
+                not message.author.top_role.permissions.kick_members):
+                await message.channel.send('User has insufficient permissions for this action.')
+                return
+            match = CHANGE_SAFETY.match(message.content)
+            safety_level = match.group(1).lower()
+            id = int(match.group(3))
+            self.image_db.change_safety(id, safety_level)
+
+        elif DELETE_IMAGE.match(message.content):
+            if (message.author.id != self.quotebot_owner_id and
+                not message.author.top_role.permissions.kick_members):
+                await message.channel.send('User has insufficient permissions for this action.')
+                return
+            match = DELETE_IMAGE.match(message.content)
+            id = int(match.group(2))
+            if not self.image_db.id_exists(id):
+                await message.channel.send(f'No image with that id exists.')
+                return
+            result = self.image_db.delete_image(id)
+            if result is None:
+                await message.channel.send(f'Failed to delete image #{id}.')
+            else:
+                await message.channel.send(f'Image #{id} has been deleted.')
+        elif GET_IMAGE.match(message.content):
+            match = GET_IMAGE.match(message.content)
+            safety_level = match.group(2).lower()
+            is_nsfw = safety_level == 'nsfw'
+            if is_nsfw and not message.channel.is_nsfw():
+                await message.channel.send('NSFW images are not permitted in this channel.')
+                return
+
+            image_id = match.group(3)
+            result = self.image_db.get_image(safety_level, image_id)
+            if result is None:
+                # Image with id either does not exist or is more nsfw than the safety level specified.
+                await message.channel.send('No matching image with the given safety level and id found.')
+                return
+            (img_id, path, _, timestamp, author) = result
+            if os.path.isfile(path):
+                # Post the random image
+                response_message = f'#{img_id} added by {author} at {format_timestamp(timestamp)}.'
+                await message.channel.send(content=response_message, file=discord.File(path))
+            else:
+                # Found a random image path, but the image does not exist.
+                print(result)
+                await message.channel.send('Found a matching random image, but it could not be retrieved. Please contact administrator.')
+        elif GET_IMAGE_TAGGED.match(message.content):
+            match = GET_IMAGE_TAGGED.match(message.content)
+            safety_level = match.group(2).lower()
+            is_nsfw = safety_level == 'nsfw'
+            if is_nsfw and not message.channel.is_nsfw():
+                await message.channel.send('NSFW images are not permitted in this channel.')
+                return
+            tags = match.group(2).split()#TODO
+        
+        elif RANDOM_IMAGE.match(message.content):
+            match = RANDOM_IMAGE.match(message.content)
+            safety_level = match.group(1).lower()
+            is_nsfw = safety_level == 'nsfw'
+            if is_nsfw and not message.channel.is_nsfw():
+                await message.channel.send('NSFW images are not permitted in this channel.')
+                return
+            
+            tags = match.group(3).split()
+            result = self.image_db.get_random_image(safety_level, tags)
+            if result is None:
+                # no matching random image
+                if not tags:
+                    await message.channel.send('No random images with the given safety level.')
+                else:
+                    await message.channel.send('No random images with the given safety level and tags.')
+                return
+            (img_id, path, _, timestamp, author) = result
+            if os.path.isfile(path):
+                # Post the random image
+                response_message = f'#{img_id} added by {author} at {format_timestamp(timestamp)}.'
+                await message.channel.send(content=response_message, file=discord.File(path))
+            else:
+                # Found a random image path, but the image does not exist.
+                print(result)
+                await message.channel.send('Found a matching random image, but it could not be retrieved. Please contact administrator.')
         else:
             pass # Irrelevant message.
 
+            
     def _get_quote(self, quote_id):
         try:
             message, author, timestamp = self.quote_store.get_quote(quote_id)
@@ -281,6 +401,168 @@ class QuoteDB:
     def quote_count(self):
         return len(self.ids_to_messages)
 
+class ImageDB:
+    def __init__(self, image_db_path="imagedb.sqlite", image_store_dir="images"):
+        self.image_dir = image_store_dir
+        self.connection = None
+        try:
+            self.connection = sqlite3.connect(image_db_path)
+        except Exception as e:
+            print(f'Error {e} occurred while trying to connect to the image database.')
+
+        create_images_table = """
+        CREATE TABLE IF NOT EXISTS images (
+        imageid INTEGER PRIMARY KEY AUTOINCREMENT,
+        imagepath TEXT NOT NULL,
+        safety INTEGER,
+        timestamp REAL,
+        author TEXT NOT NULL
+        );
+        """
+
+        # create_tags_table = """
+        # CREATE TABLE IF NOT EXISTS tags (
+        # tagid INTEGER PRIMARY KEY AUTOINCREMENT,
+        # title TEXT NOT NULL,
+        # );
+        # """
+
+        # create_imagetags_table = """
+        # CREATE TABLE IF NOT EXISTS imagetags (
+        # imageid INTEGER,
+        # tagid INTEGER,
+        # );
+        # """
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(create_images_table)
+            self.connection.commit()
+        except Exception as e:
+            print(f"The error '{e}' occurred")
+        finally:
+            cursor.close()
+
+        # execute_query(self.connection, create_tags_table)
+        # execute_query(self.connection, create_imagetags_table)
+
+    def get_random_image(self, safety='sfw', tags=[]):
+        safety_level = self.safety_to_level(safety)
+        try:
+            query = """SELECT * FROM images WHERE safety = ?"""
+            cursor = self.connection.cursor()
+            cursor.execute(query, (safety_level,))
+            result = cursor.fetchone()
+            cursor.close()
+            if result is None:
+                return None
+            (_, path, _, _, _) = result
+            if not os.path.exists(path):
+                print(f'Expected an image at {path} and found none.')
+                return None
+            return result
+        except Exception as e:
+            print(f"The error '{e}' occurred in get_random_image.")
+            return None
+    
+    def get_image(self, safety, id):
+        safety_level = self.safety_to_level(safety)
+        print(safety)
+        try:
+            query = """SELECT * FROM images WHERE imageid = ? AND safety = ?"""
+            cursor = self.connection.cursor()
+            cursor.execute(query, (id,safety_level))
+            result = cursor.fetchone()
+            print(result)
+            cursor.close()
+            if result is None:
+                return None
+            (_, path, _, _, _) = result
+            if not os.path.exists(path):
+                print(f'Expected an image at {path} and found none.')
+                return None
+            return result
+        except Exception as e:
+            print(f"The error '{e}' occurred in get_random_image.")
+            return None
+
+    async def add_image(self, image_url, safety, tags, author, timestamp):
+        safety_level = self.safety_to_level(safety)
+        tags = list(map(lambda tag : tag.lower(), tags))
+        file_path = await self.save_image(image_url)
+        image_data = (file_path, safety_level, timestamp, author)
+
+        cursor = self.connection.cursor()
+        cursor.execute('INSERT INTO images(imagepath, safety, timestamp, author) values (?, ?, ?, ?)', image_data)
+        self.connection.commit()
+        cursor.close()
+        return cursor.lastrowid
+
+    def delete_image(self, id):
+        if not self.id_exists(id):
+            return None
+        try:
+            query = f"""SELECT imagepath FROM images WHERE imageid = {id}"""
+            cursor = self.connection.cursor()
+            cursor.execute(query)
+            result = cursor.fetchone()
+
+
+            if not os.path.exists(result):
+                print(f'Expected an image at {result} and found none.')
+                return None
+            os.unlink()
+
+            query = f"""DELETE FROM images WHERE imageid = {id}"""
+            cursor.execute(query)
+            self.connection.commit()
+
+            cursor.close()
+            return True
+        except Exception as e:
+            print(f"The error '{e}' occurred in delete_image.")
+            return None
+
+    def change_safety(self, id, safety='nsfw'):
+        if not self.id_exists(id):
+            return None
+        
+        safety_level = self.safety_to_level(safety)
+
+        data = (id, safety_level)
+        sql = """UPDATE images SET safety = ? WHERE imageid = ?"""
+        cursor = self.connection.cursor()
+        cursor.execute(sql, data)
+        result = None if cursor.rowcount < 1 else f"Successfully changed the safety level to {safety}"
+        cursor.close()
+        return result
+
+    def id_exists(self, id):
+        cursor = self.connection.cursor()
+        cursor.execute(f"SELECT COUNT() FROM images WHERE imageid='{id}'")
+        exists = cursor.fetchone()[0] > 0
+        cursor.close()
+        return exists
+
+    def safety_to_level(self, safety):
+        return 0 if safety.lower() == 'sfw' else 1
+
+    async def save_image(self, image_url):
+        if not os.path.isdir(self.image_dir):
+            os.makedirs(self.image_dir)
+        filename = os.path.basename(image_url)
+
+        output_file = self.image_dir + os.path.sep + filename
+        counter = 1
+        while os.path.exists(output_file):
+            output_file = self.image_dir + os.path.sep + str(counter) + "_" + filename
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
+                if resp.status == 200:
+                    f = await aiofiles.open(output_file, mode='wb')
+                    await f.write(await resp.read())
+                    await f.close()
+        return output_file
 def main():
     """Point of entry for the quote bot."""
     parser = argparse.ArgumentParser()
@@ -297,11 +579,23 @@ def main():
                         required=False,
                         help="The path for the text file to store your quotes.",
                         default="quotes.txt")
+    parser.add_argument("-db",
+                        type=str,
+                        required=False,
+                        help="The path to the image database file.",
+                        default="imagedb.sqlite")
+    parser.add_argument("-id", "--imgdir",
+                        type=str,
+                        required=False,
+                        help="The path to the directory holding images",
+                        default="images")
     args = parser.parse_args()
     token = args.token
     owner_id = args.owner
     quotes_store = args.quotes
-    client = QuoteBot(owner_id, quotes_store)
+    image_db_path = args.db
+    image_dir = args.imgdir
+    client = QuoteBot(owner_id, quotes_store, image_db_path, image_dir)
     client.run(token)
 
 if __name__ == "__main__":
