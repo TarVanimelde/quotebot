@@ -8,11 +8,9 @@ import csv
 from datetime import datetime
 import os
 import os.path
-import random
 import re
 import sqlite3
 import time
-import urllib
 
 import discord
 
@@ -53,12 +51,12 @@ def format_timestamp(timestamp):
 
 class QuoteBot(discord.Client):
     """Event handling for Discord."""
-    def __init__(self, quotebot_owner_id=-1, quote_store_path="quotes.txt", image_db_path="imagedb.sqlite", image_dir="images"):
+    def __init__(self, quotebot_owner_id=-1, quote_store_path="quotes.txt", image_db_path="quotes.sql", image_dir="images"):
         """Starts the quote bot (and its superclass), initializing the underlying quote store.
         Keywords arguments:
         quotebot_owner_id -- the userid of regular account owner in charge of the bot (default -1)
         quote_store_path -- the path to the file containing the quote store (default quotes.txt)"""
-        self.quote_store = QuoteDB(quote_store_path)
+        self.quote_store = QuoteDB(image_db_path)
         self.quotebot_owner_id = quotebot_owner_id
         self.image_db = ImageDB(image_db_path, image_dir)
         super(QuoteBot, self).__init__()
@@ -178,7 +176,6 @@ class QuoteBot(discord.Client):
             image_types = ["png", "jpeg", "gif", "jpg"]
             is_image = lambda filename: any(filename.lower().endswith(image_type) for image_type in image_types)
             images = list(map(lambda attachment: attachment.url, filter(lambda attachment: is_image(attachment.filename), message.attachments)))
-            print(images)
 
             if not images:
                 await message.channel.send('No images to save.')
@@ -292,117 +289,121 @@ class QuoteBot(discord.Client):
                                                                message)
             return result
 class QuoteDB:
-    """Provides functions for loading and storing quotes and their data.
-    Changes are persisted through in a csv file.
-    The csv file is stored as quote_id author timestamp message,
-    is space-delimited, and has quotechar \"|\"  """
-    def __init__(self, store_path="quotes.txt"):
-        """Loads the quotes from the quote store into memory, creating
-        a new file for the quote store if none exists.
-        Keyword arguments:
-        store_path -- The filesystem path to the quote store (default "quotes.txt")"""
-        self.store_path = store_path
-        self.load_quotes()
+    def __init__(self, database="quotes.sql"):
+        self.connection = None
+        try:
+            self.connection = sqlite3.connect(database)
+        except Exception as e:
+            print(f'Error {e} occurred while trying to connect to the quote database.')
 
-    def load_quotes(self):
-        """Load quote data from store_path into memory.
-        If store_path does not exist, then it is created.
-        If the store_path points to a directory, an IsADirectoryError is raised."""
-        if not os.path.exists(self.store_path):
-            with open(self.store_path, 'w+'):
-                pass
-        elif os.path.isdir(self.store_path):
-            print('Invalid quotes file: ', self.store_path)
-            raise IsADirectoryError('Quote file \"{}\" is a directory'.format(self.store_path))
-        with open(self.store_path, encoding='utf-8') as quote_file:
-            self.ids_to_messages = {}
-            reader = csv.reader(quote_file, delimiter=' ', quotechar="|", quoting=csv.QUOTE_MINIMAL)
-            for row in reader:
-                if not row:
-                    continue
-                quote_id = int(row[0])
-                author = row[1]
-                timestamp = float(row[2])
-                message = row[3]
-                self.ids_to_messages[quote_id] = (message, author, timestamp)
-
-    def store_quotes(self):
-        """Store a copy of the in-memory quotes to store_path as a csv file."""
-        with open(self.store_path, 'w', encoding='utf-8') as store:
-            writer = csv.writer(store, delimiter=' ', quotechar="|", quoting=csv.QUOTE_MINIMAL)
-            for quote_id, (message, author, timestamp) in self.ids_to_messages.items():
-                writer.writerow([quote_id, author, timestamp, message])
-
-    def generate_next_id(self):
-        """Generates an integer id that is currently not in use in the store."""
-        if not self.ids_to_messages:
-            return 1
-        last_id = list(self.ids_to_messages.keys())[-1]
-        return last_id + 1
+        create_quotes_table = """
+        CREATE TABLE IF NOT EXISTS quotes (
+        quoteid INTEGER PRIMARY KEY AUTOINCREMENT,
+        message TEXT NOT NULL,
+        author TEXT NOT NULL,
+        timestamp REAL
+        );
+        """
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(create_quotes_table)
+            self.connection.commit()
+        except Exception as e:
+            print(f"The error '{e}' occurred at QuoteDB init.")
+        finally:
+            cursor.close()
 
     def add_quote(self, message, timestamp, author):
         """Add the quote information to the quote store.
         Return the id corresponding to the quote."""
-        quote_id = self.generate_next_id()
-        self.ids_to_messages[quote_id] = (message, author, timestamp)
-        self.store_quotes()
-        return quote_id
+        quote_data = (message, author, timestamp)
+        cursor = self.connection.cursor()
+        cursor.execute('INSERT INTO quotes(message, author, timestamp) values (?, ?, ?)', quote_data)
+        self.connection.commit()
+        cursor.close()
+        return cursor.lastrowid
 
     def delete_quote(self, quote_id):
         """Removes quote information corresponding to the id from memory and the underlying storage.
         Raises a KeyError if the id is not in the store."""
-        if quote_id in self.ids_to_messages:
-            del self.ids_to_messages[quote_id]
-            self.store_quotes()
+        if not self.exists(quote_id):
+            raise KeyError(f'Quote #{quote_id} not found in the store.')
         else:
-            raise KeyError('Quote #{} not found in the store.'.format(quote_id))
+            query = """DELETE from quotes WHERE quoteid = ?"""
+            cursor = self.connection.cursor()
+            cursor.execute(query, (quote_id,))
+            self.connection.commit()
+            cursor.close()
+
     def find_message_quotes(self, message_substring):
         """Return a list of ids whose quote contains input as a substring (case-insensitive)."""
-        message_substring = message_substring.lower()
-        matching_ids = []
-        for quote_id, (message, _, _) in self.ids_to_messages.items():
-            if message_substring in message.lower():
-                matching_ids.append(quote_id)
+        query = """SELECT quoteid from quotes WHERE message LIKE ?"""
+        cursor = self.connection.cursor()
+        cursor.execute(query, ('%'+message_substring+'%',))
+        matching_ids = list(map(lambda result: result[0] , cursor.fetchall()))
+        cursor.close()
         return matching_ids
 
     def find_author_quotes(self, author):
         """Return a list of ids (integers) whose author matches the input (case-insensitive)."""
         author = author.lower()
-        matching_ids = []
-        for quote_id, (_, message_author, _) in self.ids_to_messages.items():
-            if author == message_author.lower():
-                matching_ids.append(quote_id)
+        query = """SELECT quoteid FROM quotes WHERE author LIKE ?"""
+        cursor = self.connection.cursor()
+        cursor.execute(query, (author,)) #"\'"
+        matching_ids = list(map(lambda result: result[0] , cursor.fetchall()))
+        cursor.close()
         return matching_ids
 
     def get_quote(self, quote_id):
         """Return the message, author, and timestamp corresponding to the id as a tuple.
         If there is no matching id in the store, a KeyError is raised.."""
-        if quote_id not in self.ids_to_messages.keys():
+        if not self.exists(quote_id):
             raise KeyError('Quote #{} not found in the store.'.format(quote_id))
-        message, author, timestamp = self.ids_to_messages[quote_id]
+        query = """SELECT message, author, timestamp FROM quotes WHERE quoteid = ?"""
+        cursor = self.connection.cursor()
+        cursor.execute(query, (quote_id,))
+        message, author, timestamp = cursor.fetchone()
+        cursor.close()
         return message, author, timestamp
 
     def get_random_id(self):
         """Return a randomly selected id in the quote store.
         If there are no quotes in the store, a ValueError is raised."""
-        if not self.ids_to_messages:
+        if self.quote_count() == 0:
             raise ValueError('No quotes in the store.')
-        quote_id = random.choice(list(self.ids_to_messages.keys()))
+        cursor = self.connection.cursor()
+        cursor.execute("""SELECT quoteid FROM quotes ORDER BY RANDOM() LIMIT 1""")
+        quote_id = cursor.fetchone()[0]
+        cursor.close()
         return quote_id
 
     def get_most_recent_id(self):
         """Return the most recently generated id in the quote store.
         If there are no quotes in the store, a ValueError is raised."""
-        if not self.ids_to_messages:
+        cursor = self.connection.cursor()
+        cursor.execute("""SELECT MAX(quoteid) FROM quotes""")
+        result = cursor.fetchone()
+        cursor.close()
+        if result is None:
             raise ValueError('No quotes in the store.')
-        quote_id = list(self.ids_to_messages.keys())[-1]
-        return quote_id
+        return int(result[0])
     
     def quote_count(self):
-        return len(self.ids_to_messages)
+        cursor = self.connection.cursor()
+        cursor.execute("""SELECT COUNT(*) FROM quotes""")
+        rowcount = cursor.fetchone()[0]
+        cursor.close()
+        return int(rowcount)
+
+    def exists(self, id):
+        cursor = self.connection.cursor()
+        cursor.execute(f"SELECT COUNT() FROM quotes WHERE quoteid='{id}'")
+        exists = cursor.fetchone()[0] > 0
+        cursor.close()
+        return exists
 
 class ImageDB:
-    def __init__(self, image_db_path="imagedb.sqlite", image_store_dir="images"):
+    def __init__(self, image_db_path="quotes.sql", image_store_dir="images"):
         self.image_dir = image_store_dir
         self.connection = None
         try:
@@ -438,7 +439,7 @@ class ImageDB:
             cursor.execute(create_images_table)
             self.connection.commit()
         except Exception as e:
-            print(f"The error '{e}' occurred")
+            print(f"The error '{e}' occurred at ImageDB init.")
         finally:
             cursor.close()
 
@@ -466,13 +467,11 @@ class ImageDB:
     
     def get_image(self, safety, id):
         safety_level = self.safety_to_level(safety)
-        print(safety)
         try:
             query = """SELECT * FROM images WHERE imageid = ? AND safety = ?"""
             cursor = self.connection.cursor()
             cursor.execute(query, (id,safety_level))
             result = cursor.fetchone()
-            print(result)
             cursor.close()
             if result is None:
                 return None
@@ -582,8 +581,8 @@ def main():
     parser.add_argument("-db",
                         type=str,
                         required=False,
-                        help="The path to the image database file.",
-                        default="imagedb.sqlite")
+                        help="The path to the database.",
+                        default="quotes.sql")
     parser.add_argument("-id", "--imgdir",
                         type=str,
                         required=False,
