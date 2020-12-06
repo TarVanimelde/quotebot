@@ -374,7 +374,7 @@ class QuoteDB:
     def random_quote_id(self, get_image_quote, safety='sfw'):
         safety_level = self.safety_to_level(safety)
         try:
-            query = """SELECT * FROM quotes WHERE safety = ? ORDER BY RANDOM() LIMIT 1"""
+            query = """SELECT quoteid FROM quotes WHERE safety = ? ORDER BY RANDOM() LIMIT 1"""
             if get_image_quote:
                 query = """SELECT quoteid FROM quotes WHERE safety = ? AND image_name IS NOT NULL ORDER BY RANDOM() LIMIT 1"""
             cursor = self.connection.cursor()
