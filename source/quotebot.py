@@ -22,7 +22,7 @@ FIND_AUTHOR_QUOTE = re.compile(r"\.(quote author|quote by)\s(.+)", re.DOTALL | r
 GET_QUOTE = re.compile(r"\.(quote get|quote read)\s(\d+)", re.IGNORECASE)
 RANDOM_QUOTE = re.compile(r"\.quote random\s*(i)?\s*(sfw|nsfw)?", re.IGNORECASE)
 MOST_RECENT_QUOTE = re.compile(r"\.quote last", re.IGNORECASE)
-SET_QUOTE = re.compile(r"\.quote (\d+) (sfw|nsfw)", re.IGNORECASE)
+SET_QUOTE = re.compile(r"\.quote set\s+(\d+)\s+(sfw|nsfw)", re.IGNORECASE)
 TOTAL_QUOTE = re.compile(r"\.quote total", re.IGNORECASE)
 HELP_QUOTE = re.compile(r"\.quote help", re.IGNORECASE)
 
@@ -87,65 +87,29 @@ class QuoteBot(discord.Client):
             is_image = lambda filename: any(filename.lower().endswith(image_type) for image_type in image_types)
             images = list(map(lambda attachment: attachment.url, filter(lambda attachment: is_image(attachment.filename), message.attachments)))
 
-            if not images:
-                if quote_message is None:
-                    return
-                else:
-                    quote_id = await self.db.add_quote(quote_message, None, safety, author, timestamp)
-                    await message.channel.send(f'Added #{quote_id} to the store.')
+            if safety is not None:
+                safety = safety.lower()
             else:
-                if safety is None:
-                    if message.channel.is_nsfw():
-                        safety = 'nsfw'
-                    else:
-                        safety = 'sfw'
-                for image in images:
-                    quote_id = await self.db.add_quote(quote_message, image, safety, author, timestamp)
-                    if quote_id is None:
-                        await message.channel.send(f'There was an error saving {image}.')
-                    else:
-                        await message.channel.send(f'Added quote #{quote_id} to the store with image <{image}>.')
+                if images:
+                    safety = "nsfw"
+                else:
+                    safety = "sfw"
+            await self.add_quote(message.channel, quote_message, images, safety, author, timestamp)
         elif DELETE_QUOTE.match(message.content):
-            if (message.author.id != self.quotebot_owner_id and
-                    not message.author.top_role.permissions.kick_members):
+            if not self.has_maximum_permissions(message.author):
                 await message.channel.send('User has insufficient permissions for this action.')
                 return
             match = DELETE_QUOTE.match(message.content)
             quote_id = int(match.group(2))
-            try:
-                self.db.delete_quote(quote_id)
-            except KeyError:
-                result = f'Quote #{quote_id} is not in the store.'
-                await message.channel.send(result)
-            else:
-                result = f'Quote #{quote_id} has been deleted.'
-                await message.channel.send(result)
+            await self.delete_quote(message.channel, quote_id)
         elif FIND_MESSAGE_QUOTE.match(message.content):
             match = FIND_MESSAGE_QUOTE.match(message.content)
-            quote_message = match.group(2)
-            matching_ids = self.db.find_message_quotes(quote_message) #TODO: separate sfw/nsfw ids
-            if not matching_ids:
-                await message.channel.send('No quotes that contain the search in the store.')
-            elif len(matching_ids) == 1:
-                quote_id = matching_ids[0]
-                await self.post_quote(message.channel, quote_id)
-            else:
-                ids_as_string = ', '.join(str(s) for s in matching_ids)
-                result = f'Quotes that contain the search include {ids_as_string}.'
-                await message.channel.send(result)
+            search_term = match.group(2)
+            await self.get_matching_quotes(message.channel, search_term)
         elif FIND_AUTHOR_QUOTE.match(message.content):
             match = FIND_AUTHOR_QUOTE.match(message.content)
             author = match.group(2)
-            matching_ids = self.db.find_author_quotes(author) #TODO: separate sfw/nsfw ids
-            if not matching_ids:
-                await message.channel.send(f'No quotes authored by {author} in the store.')
-            elif len(matching_ids) == 1:
-                quote_id = matching_ids[0]
-                await self.post_quote(message.channel, quote_id)
-            else:
-                ids_as_string = ', '.join(str(s) for s in matching_ids)
-                result = f'Quotes authored by {author} include {ids_as_string}.'
-                await message.channel.send(result)
+            await self.get_author_quotes(message.channel, author)
         elif GET_QUOTE.match(message.content):
             match = GET_QUOTE.match(message.content)
             quote_id = int(match.group(2))
@@ -165,15 +129,14 @@ class QuoteBot(discord.Client):
             response = '```{}```'.format(HELP_MESSAGE)
             await message.author.send(response)
         elif SET_QUOTE.match(message.content):
-            if (message.author.id != self.quotebot_owner_id and
-                not message.author.top_role.permissions.kick_members):
+            if not self.has_maximum_permissions(message.author):
                 await message.channel.send('User has insufficient permissions for this action.')
                 return
             match = SET_QUOTE.match(message.content)
             quote_id = int(match.group(1))
             safety = match.group(2).lower()
             self.db.change_safety(quote_id, safety)
-            # RANDOM_QUOTE = re.compile(r"\.quote random\s*(i)?\s*(sfw|nsfw)?", re.IGNORECASE)
+            await message.channel.send(f'Changed the safety level of Quote #{quote_id}.')
         elif RANDOM_QUOTE.match(message.content):
             match = RANDOM_QUOTE.match(message.content)
             safety = match.group(2)
@@ -195,6 +158,63 @@ class QuoteBot(discord.Client):
                 await self.post_quote(message.channel, quote_id)
         else:
             pass # Irrelevant message.
+
+    async def add_quote(self, channel, message, images, safety, author, timestamp):
+        if not images:
+            if message is None:
+                return
+            else:
+                quote_id = await self.db.add_quote(message, None, safety, author, timestamp)
+                await channel.send(f'Added #{quote_id} to the store.')
+        else:
+            if safety is None:
+                if channel.is_nsfw():
+                    safety = 'nsfw'
+                else:
+                    safety = 'sfw'
+            for image in images:
+                quote_id = await self.db.add_quote(message, image, safety, author, timestamp)
+                if quote_id is None:
+                    await channel.send(f'There was an error saving {image}.')
+                else:
+                    await channel.send(f'Added quote #{quote_id} to the store with image <{image}>.')
+
+    async def delete_quote(self, channel, quote_id):
+        try:
+            self.db.delete_quote(quote_id)
+        except KeyError:
+            result = f'Quote #{quote_id} is not in the store.'
+            await channel.send(result)
+        else:
+            result = f'Quote #{quote_id} has been deleted.'
+            await channel.send(result)
+
+    async def get_author_quotes(self, channel, author):
+        matching_ids = self.db.find_author_quotes(author) #TODO: separate sfw/nsfw ids
+        if not matching_ids:
+            await channel.send(f'No quotes authored by {author} in the store.')
+        elif len(matching_ids) == 1:
+            quote_id = matching_ids[0]
+            await self.post_quote(channel, quote_id)
+        else:
+            ids_as_string = ', '.join(str(s) for s in matching_ids)
+            result = f'Quotes authored by {author} include {ids_as_string}.'
+            await channel.send(result)
+
+    async def get_matching_quotes(self, channel, search_term):
+        matching_ids = self.db.find_message_quotes(search_term) #TODO: separate sfw/nsfw ids
+        if not matching_ids:
+            await channel.send('No quotes that contain the search in the store.')
+        elif len(matching_ids) == 1:
+            quote_id = matching_ids[0]
+            await self.post_quote(channel, quote_id)
+        else:
+            ids_as_string = ', '.join(str(s) for s in matching_ids)
+            result = f'Quotes that contain the search include {ids_as_string}.'
+            await channel.send(result)
+    
+    def has_maximum_permissions(self, author):
+        return author.id == self.quotebot_owner_id or author.top_role.permissions.kick_members
 
     async def post_quote(self, channel, quote_id):
         try:
@@ -266,6 +286,7 @@ class QuoteDB:
         counter = 1
         while os.path.exists(output_file):
             output_file = self.image_dir + os.path.sep + str(counter) + "_" + filename
+            counter = counter + 1
         
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as resp:
@@ -369,6 +390,7 @@ class QuoteDB:
         safety_level = self.safety_to_level(safety)
         cursor = self.connection.cursor()
         cursor.execute("""UPDATE quotes SET safety = ? WHERE quoteid = ?""", (safety_level,quote_id))
+        self.connection.commit()
         cursor.close()
 
     def random_quote_id(self, get_image_quote, safety='sfw'):
